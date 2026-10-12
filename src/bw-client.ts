@@ -54,12 +54,24 @@ const NO_UNLOCK_TYPES = new Set(['dtpa']);
  * created", which reads like an enqueue problem and is not one. `stateful_enqueue` fails
  * the same way there, so on classic every lock runs as plain `stateful`.
  *
- * BW/4HANA takes the handle without any of this and is left exactly as it was: what the
- * caller asked for is what it gets.
+ * BW/4HANA usually takes the handle without any of this: what the caller asked for is what
+ * it gets. Some BW/4HANA systems behave like classic, though — they answer a
+ * `stateful_enqueue` lock with 200 and a handle, and in the same response delete
+ * `sap-contextid`, so the create POST lands in a new context and gets the same 423. `lock()`
+ * notices the deletion, takes the lock again as `stateful` and records it here, and from
+ * then on every lock on this system runs as `stateful`.
  */
+let enqueueEndsContext = false;
+
 export function lockSessionType(requested?: string): string | undefined {
-  if (cachedPlatform()?.platform !== 'classic') return requested;
-  return 'stateful';
+  if (cachedPlatform()?.platform === 'classic') return 'stateful';
+  if (requested === 'stateful_enqueue' && enqueueEndsContext) return 'stateful';
+  return requested;
+}
+
+/** Record that this system ends the context on a `stateful_enqueue` lock (see above). */
+export function markEnqueueEndsContext(value = true): void {
+  enqueueEndsContext = value;
 }
 
 /** `lockSessionType` as a header object, for the lock endpoints that build headers by hand. */
@@ -496,6 +508,15 @@ export class BwClient {
     }
   }
 
+  /** Whether the response deletes `sap-contextid`, i.e. the server ended the stateful context. */
+  private deletesContextId(response: AxiosResponse): boolean {
+    const setCookies: string[] = response.headers['set-cookie'] ?? [];
+    return setCookies.some((c) => {
+      const attrs = c.split(';');
+      return attrs[0].trim().startsWith('sap-contextid=') && this.isCookieDeletion(attrs);
+    });
+  }
+
   // A Set-Cookie is a deletion when Max-Age is <= 0 or Expires is in the past.
   private isCookieDeletion(attrs: string[]): boolean {
     for (const a of attrs.slice(1)) {
@@ -713,6 +734,18 @@ export class BwClient {
       }
     );
     this.updateCookies(response);
+    // The server ended the stateful context in answer to a stateful_enqueue lock, so the
+    // handle it just returned is useless to the next request. The enqueue went with the
+    // context, which is why the same lock can simply be taken again as stateful.
+    if (
+      response.status < 400 &&
+      !cleanHeaders &&
+      lockSessionType(sessionType) === 'stateful_enqueue' &&
+      this.deletesContextId(response)
+    ) {
+      markEnqueueEndsContext();
+      return this.lock(type, name, extraHeaders, sessionType, cleanHeaders);
+    }
     const key = lockKey(this.identityKey(), type, name);
     if (response.status >= 400) {
       // 403 also means "you already hold this lock, in another session" — BW refuses even

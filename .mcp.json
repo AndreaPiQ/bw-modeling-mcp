@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "bw4": {
+      "command": "node",
+      "args": ["C:\\Users\\andrea.pistore\\Documents\\GitHub\\bw-modeling-mcp\\dist\\stdio.js"],
+      "env": {
+        "BW_URL": "https://qintesi09.qintesi.local:44770",
+        "BW_USER": "PNIGRELLI",
+        "BW_PASSWORD": "Qintesi001",
+        "BW_CLIENT": "100",
+        "BW_LANGUAGE": "IT",
+        "BW_MCP_SYSTEM_LABEL": "BW4"
+      }
+    }
+  }
+}
